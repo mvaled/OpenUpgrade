@@ -18,9 +18,96 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 ##############################################################################
+import pytz
+import logging
+
 from openerp.openupgrade import openupgrade, openupgrade_80
 from openerp.modules.registry import RegistryManager
 from openerp import SUPERUSER_ID
+
+
+_logger = logging.getLogger(__name__)
+
+
+# rrule_to_string taken from
+# http://schinckel.net/2014/05/28/rrule-to-rfc-string/
+
+FREQNAMES = ['YEARLY', 'MONTHLY', 'WEEKLY', 'DAILY', 'HOURLY', 'MINUTELY',
+             'SECONDLY']
+
+
+def normalize_utc(dt):
+    if not dt.tzinfo:
+        return pytz.UTC.localize(dt)
+    else:
+        return pytz.UTC.normalize(dt)
+
+
+def rrule_to_string(rule):
+    FMT = '%Y%m%dT%H%M%SZ'
+    output = []
+    h, m, s = [None] * 3
+    if rule._dtstart:
+        dtstart = normalize_utc(rule._dtstart)
+        # XXX: We'll always store the dtstart in UTC so the 'Z' is valid
+        # according to RFC 2445
+        output.append('DTSTART:' + dtstart.strftime(FMT))
+        h, m, s = rule._dtstart.timetuple()[3:6]
+    parts = ['FREQ='+FREQNAMES[rule._freq]]
+    if rule._interval != 1:
+        parts.append('INTERVAL='+str(rule._interval))
+    if rule._wkst:
+        parts.append('WKST='+str(rule._wkst))
+    if rule._count:
+        parts.append('COUNT='+str(rule._count))
+    elif rule._until:
+        until = normalize_utc(rule._until)
+        parts.append('UNTIL='+until.strftime(FMT))
+    for name, value in [
+            ('BYSETPOS', rule._bysetpos),
+            ('BYMONTH', rule._bymonth),
+            ('BYMONTHDAY', rule._bymonthday),
+            ('BYYEARDAY', rule._byyearday),
+            ('BYWEEKNO', rule._byweekno),
+            ('BYWEEKDAY', rule._byweekday),
+            ]:
+        if value:
+            parts.append(name+'='+','.join(str(v) for v in value))
+    # Only include these if they differ from rule._dtstart
+    if rule._byhour and rule._byhour[0] != h:
+        parts.append('BYHOUR=%s' % rule._byhour)
+    if rule._byminute and rule._byminute[0] != m:
+        parts.append('BYMINUTE=%s' % rule._byminute)
+    if rule._bysecond and rule._bysecond[0] != s:
+        parts.append('BYSECOND=%s' % rule._bysecond),
+    output.append(';'.join(parts))
+    return '\n'.join(output)
+
+
+def ensure_valid_rrules(cr):
+    from dateutil import rrule
+    pool = RegistryManager.get(cr.dbname)
+    calendar_event = pool['calendar.event']
+    cr.execute('SELECT id FROM {table}'.format(table=calendar_event._table))
+    ids = [row[0] for row in cr.fetchall()]
+    UPDATE = "UPDATE {table} SET rrule=%s WHERE id=%s".format(
+        table=calendar_event._table
+    )
+    updates = []
+    for id in ids:
+        event = calendar_event.browse(cr, SUPERUSER_ID, id)
+        if event.rrule:
+            rule = rrule.rrulestr(str(event.rrule))
+            until = getattr(rule, '_until', None)
+            if until and not until.tzinfo:
+                rule._until = pytz.UTC.localize(until)
+                rrulestr = rrule_to_string(rule)
+                _logger.warn('Updating invalid UNTIL rrule %r', rrulestr)
+                updates.extend((rrulestr, event.id))
+    if updates:
+        query = ';'.join([UPDATE] * (len(updates) // 2))
+        args = tuple(updates)
+        cr.execute(query, args)
 
 
 def import_crm_meeting(cr):
@@ -203,5 +290,6 @@ def migrate(cr, version):
         set state='needsAction' where state in ('needs-action')''')
     # load modified noupdate data
     openupgrade.load_data(cr, 'calendar', 'migrations/8.0.1.0/data.xml')
+    ensure_valid_rrules(cr)
     openupgrade_80.set_message_last_post(
         cr, SUPERUSER_ID, pool, ['calendar.event'])
