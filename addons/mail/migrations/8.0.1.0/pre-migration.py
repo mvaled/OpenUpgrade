@@ -35,6 +35,34 @@ column_renames = {
 }
 
 
+def ensure_single_followers(cr):
+    # Before certain point in OpenERP 7.0 the mail_followers table allowed a
+    # partner to follow the same topic several times::
+    #
+    #    IntegrityError: could not create unique index "mail_followers_mail_followers_res_partner_res_model_id_uniq"
+    #    DETAIL:  Key (res_model, res_id, partner_id)=(crm.lead, 1459, 417) is duplicated.
+    #
+    # This error avoids the creation of the unique index.
+    #
+    # This migration step finds any duplicated rows and leaves a single one.
+    cr.execute('''
+       SELECT res_model, res_id, partner_id, many
+       FROM (SELECT res_model, res_id, partner_id, COUNT(id) as many
+             FROM mail_followers
+             GROUP BY res_model, res_id, partner_id) AS multi_follower
+       WHERE many > 1
+    ''')
+    for res_model, res_id, partner_id, _ in cr.fetchall():
+        cr.execute('''
+           DELETE FROM mail_followers
+              WHERE res_model=%s AND res_id=%s AND partner_id=%s;
+
+           INSERT INTO mail_followers (res_model, res_id, partner_id)
+              VALUES (%s, %s, %s);
+        ''', (res_model, res_id, partner_id) * 2)
+
+
 @openupgrade.migrate()
 def migrate(cr, version):
+    ensure_single_followers(cr)
     openupgrade.rename_columns(cr, column_renames)
