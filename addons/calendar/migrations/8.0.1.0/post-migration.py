@@ -74,11 +74,11 @@ def rrule_to_string(rule):
         if value:
             parts.append(name+'='+','.join(str(v) for v in value))
     # Only include these if they differ from rule._dtstart
-    if rule._byhour and rule._byhour[0] != h:
+    if rule._byhour and list(rule._byhour)[0] != h:
         parts.append('BYHOUR=%s' % rule._byhour)
-    if rule._byminute and rule._byminute[0] != m:
+    if rule._byminute and list(rule._byminute)[0] != m:
         parts.append('BYMINUTE=%s' % rule._byminute)
-    if rule._bysecond and rule._bysecond[0] != s:
+    if rule._bysecond and list(rule._bysecond)[0] != s:
         parts.append('BYSECOND=%s' % rule._bysecond),
     output.append(';'.join(parts))
     return '\n'.join(output)
